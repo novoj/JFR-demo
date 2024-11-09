@@ -1,13 +1,29 @@
 package cz.novoj.jfrdemo;
 
+import com.linecorp.armeria.common.HttpResponse;
+import com.linecorp.armeria.common.sse.ServerSentEvent;
 import com.linecorp.armeria.server.Server;
+import com.linecorp.armeria.server.ServiceRequestContext;
 import com.linecorp.armeria.server.annotation.Get;
 import com.linecorp.armeria.server.annotation.Param;
+import com.linecorp.armeria.server.annotation.ProducesEventStream;
+import com.linecorp.armeria.server.streaming.ServerSentEvents;
 import cz.novoj.jfrdemo.event.GuessEvent;
 import cz.novoj.jfrdemo.event.TargetNumberEvent;
 import jdk.jfr.FlightRecorder;
+import jdk.jfr.Recording;
+import jdk.jfr.consumer.RecordingStream;
 
+import java.io.IOException;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.Objects;
 import java.util.Random;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
+
+import static java.time.temporal.ChronoUnit.SECONDS;
 
 /**
  * The JfrDemoApplication class is the entry point for the JFR (Java Flight Recorder) demo application.
@@ -47,6 +63,8 @@ public class JfrDemoApplication {
         final Server server = Server.builder()
                 .http(8080)
                 .annotatedService(new GuessService())
+                .annotatedService(new StartRecording())
+                .annotatedService(new EventStreaming())
                 .build();
 
         // register periodic event to record the target number every chunk
@@ -57,6 +75,8 @@ public class JfrDemoApplication {
         server.start().join();
         // inform the user about the server's endpoint
         System.out.println("Try me on http://localhost:8080/guess/{number}");
+        System.out.println("Start recording on http://localhost:8080/jfr-record/{durationMillis}");
+        System.out.println("Start streaming on http://localhost:8080/jfr-stream/{durationMillis}");
     }
 
     /**
@@ -84,6 +104,110 @@ public class JfrDemoApplication {
                 return "Lower! \uD83D\uDC47\n";
             }
         }
+    }
+
+    /**
+     * StartRecording is a class that provides functionality to start a Java Flight Recording (JFR) with a specified duration.
+     *
+     * The class includes an HTTP endpoint that initiates the JFR recording process and saves the recording to disk.
+     * It uses specific settings to capture events like object allocation, garbage collection, CPU load, and thread sleep.
+     */
+    static class StartRecording {
+        /**
+         * An atomic integer to generate unique recording IDs for each JFR recording.
+         */
+        private final AtomicInteger recordingId = new AtomicInteger(0);
+
+        @Get("/jfr-record/{durationSeconds}")
+        public String startRecording(@Param("durationSeconds") int durationSeconds) throws IOException {
+            // create a new recording
+            final int recordingId = this.recordingId.incrementAndGet();
+            Recording recording = new Recording();
+
+            // record only specific events
+            recording.enable("jdk.ObjectAllocationInNewTLAB").withThreshold(Duration.ofMillis(1));
+            recording.enable("jdk.ObjectAllocationOutsideTLAB").withThreshold(Duration.ofMillis(1));
+            recording.enable("jdk.GarbageCollection").withThreshold(Duration.ofMillis(10));
+            recording.enable("jdk.CPULoad").withPeriod(Duration.ofMillis(500));
+            recording.enable("jdk.ThreadSleep").withThreshold(Duration.ofMillis(1));
+            recording.enable(GuessEvent.class).withoutThreshold();
+
+            final Path destination = Path.of("recording-" + recordingId + ".jfr");
+            destination.toFile().delete();
+            recording.setName("JFR Demo Recording #" + recordingId);
+            recording.setDestination(destination);
+            recording.setDuration(Duration.of(durationSeconds, SECONDS));
+            recording.setToDisk(true);
+
+            // start the recording
+            recording.start();
+            return "Recording #" + recordingId + " started\n";
+        }
+
+    }
+
+    /**
+     * StartRecording is a class that provides functionality to start a Java Flight Recording (JFR) with a specified duration.
+     *
+     * The class includes an HTTP endpoint that initiates the JFR recording process and saves the recording to disk.
+     * It uses specific settings to capture events like object allocation, garbage collection, CPU load, and thread sleep.
+     */
+    static class EventStreaming {
+        private static final ThreadPoolExecutor EXECUTOR = new ThreadPoolExecutor(4, 4, 1000, TimeUnit.MINUTES, new ArrayBlockingQueue<>(10));
+        private static final ScheduledExecutorService SCHEDULER = new ScheduledThreadPoolExecutor(1);
+        private static final BlockingQueue<ServerSentEvent> EVENT_QUEUE = new LinkedBlockingQueue<>();
+
+        @Get(value = "/jfr-stream/{durationSeconds}")
+        @ProducesEventStream
+        public HttpResponse startStreaming(@Param("durationSeconds") int durationSeconds, ServiceRequestContext ctx) {
+            // create a new recording stream
+            final RecordingStream stream = new RecordingStream();
+
+            // record only specific events
+            stream.enable("jdk.ObjectAllocationInNewTLAB").withThreshold(Duration.ofMillis(1));
+            stream.enable("jdk.ObjectAllocationOutsideTLAB").withThreshold(Duration.ofMillis(1));
+            stream.enable("jdk.GarbageCollection").withThreshold(Duration.ofMillis(10));
+            stream.enable("jdk.CPULoad").withPeriod(Duration.ofMillis(500));
+            stream.enable("jdk.ThreadSleep").withThreshold(Duration.ofMillis(1));
+            stream.enable(GuessEvent.class).withoutThreshold();
+
+            // when events are recorded, add them to the event queue
+            stream.onEvent(recordedEvent -> {
+                final ServerSentEvent event = ServerSentEvent.ofData(recordedEvent.toString());
+                EVENT_QUEUE.offer(event);
+            });
+
+            // Create a stream from the event queue
+            final Stream<ServerSentEvent> sseStream = Stream.generate(() -> {
+                try {
+                    final ServerSentEvent event = EVENT_QUEUE.take();
+                    // we need to return null to stop the stream
+                    return "Stream finished.".equals(event.event()) ? null : event;
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
+            }).takeWhile(Objects::nonNull);
+
+            // start the streaming
+            EXECUTOR.submit(stream::start);
+            SCHEDULER.schedule(
+                () -> {
+                    // finish the recording
+                    stream.stop();
+                    System.out.println("Stream finished.");
+                    stream.close();
+                    sseStream.close();
+                    EVENT_QUEUE.offer(ServerSentEvent.ofEvent("Stream finished."));
+                },
+                durationSeconds, TimeUnit.SECONDS
+            );
+
+            // and align the request timeout with the recording duration
+            ctx.setRequestTimeout(Duration.of(durationSeconds + 10, SECONDS));
+            return ServerSentEvents.fromStream(sseStream, EXECUTOR);
+        }
+
     }
 
 }
