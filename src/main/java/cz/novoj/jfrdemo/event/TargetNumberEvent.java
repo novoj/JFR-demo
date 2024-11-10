@@ -13,6 +13,7 @@ import jdk.jfr.*;
  */
 @Name("cz.novoj.jfrdemo.event.TargetNumberEvent")
 @Label("Target Number Reveal Event")
+@Description("The target number (guessed number) for the JFR demo application.")
 @Category("JFR Demo")
 @Period()
 @StackTrace(false)
