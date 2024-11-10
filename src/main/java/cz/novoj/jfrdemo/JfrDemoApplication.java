@@ -59,9 +59,19 @@ public class JfrDemoApplication {
         // start the server
         server.start().join();
         // inform the user about the server's endpoint
-        System.out.println("Try me on http://localhost:8080/guess/{number}");
-        System.out.println("Start recording on http://localhost:8080/jfr-record/{durationMillis}");
-        System.out.println("Start streaming on http://localhost:8080/jfr-stream/{durationMillis}");
+        System.out.println(
+            """
+              ▗▄▄▖▗▖ ▗▖▗▄▄▄▖ ▗▄▄▖ ▗▄▄▖     ▗▄▄▖ ▗▄▖ ▗▖  ▗▖▗▄▄▄▖
+             ▐▌   ▐▌ ▐▌▐▌   ▐▌   ▐▌       ▐▌   ▐▌ ▐▌▐▛▚▞▜▌▐▌
+             ▐▌▝▜▌▐▌ ▐▌▐▛▀▀▘ ▝▀▚▖ ▝▀▚▖    ▐▌▝▜▌▐▛▀▜▌▐▌  ▐▌▐▛▀▀▘
+             ▝▚▄▞▘▝▚▄▞▘▐▙▄▄▖▗▄▄▞▘▗▄▄▞▘    ▝▚▄▞▘▐▌ ▐▌▐▌  ▐▌▐▙▄▄▖
+            
+            Try me on http://localhost:8080/guess/{number}
+            Start recording on http://localhost:8080/jfr-record/{durationMillis}
+            Start streaming on http://localhost:8080/jfr-stream/{durationMillis}
+            Ctrl+C to stop the server
+            """
+        );
     }
 
 }
