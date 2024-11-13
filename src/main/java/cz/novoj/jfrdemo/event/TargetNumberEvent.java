@@ -11,7 +11,7 @@ import jdk.jfr.*;
  * The event is labeled with "Target Number Reveal Event" and categorized under "JFR Demo".
  * It does not capture stack traces and is periodic in nature.
  */
-@Name("cz.novoj.jfrdemo.event.TargetNumberEvent")
+@Name("TargetNumberEvent")
 @Label("Target Number Reveal Event")
 @Description("The target number (guessed number) for the JFR demo application.")
 @Category("JFR Demo")
